@@ -7,17 +7,10 @@
 #ifndef _BME280_H_
 #define _BME280_H_
 
-#include "i2c_bus.h"
+#include "driver/i2c_master.h"
 
 #define BME280_I2C_ADDRESS_DEFAULT   (0x76)     /*The device's I2C address is either 0x76 or 0x77.*/
 #define BME280_DEFAULT_CHIPID        (0x60)
-
-#define WRITE_BIT      I2C_MASTER_WRITE         /*!< I2C master write */
-#define READ_BIT       I2C_MASTER_READ          /*!< I2C master read */
-#define ACK_CHECK_EN   0x1                      /*!< I2C master will check ack from slave*/
-#define ACK_CHECK_DIS  0x0                      /*!< I2C master will not check ack from slave */
-#define ACK_VAL        0x0                      /*!< I2C ack value */
-#define NACK_VAL       0x1                      /*!< I2C nack value */
 
 #define BME280_REGISTER_DIG_T1              0x88
 #define BME280_REGISTER_DIG_T2              0x8A
@@ -181,7 +174,7 @@ typedef struct ctrl_hum {
 } bme280_ctrl_hum_t;
 
 typedef struct {
-    i2c_bus_device_handle_t i2c_dev;
+    i2c_master_dev_handle_t i2c_dev;
     uint8_t dev_addr;
     bme280_data_t data_t;
     bme280_config_t config_t;
@@ -206,7 +199,7 @@ extern "C"
  * @return
  *     - bme280_handle_t
  */
-bme280_handle_t bme280_create(i2c_bus_handle_t bus, uint8_t dev_addr);
+bme280_handle_t bme280_create(i2c_master_bus_handle_t bus, uint8_t dev_addr);
 
 /**
  * @brief   delete bme280 handle_t

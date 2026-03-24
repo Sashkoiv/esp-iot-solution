@@ -6,19 +6,26 @@
 
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
-#include "i2c_bus.h"
+#include "driver/i2c_master.h"
 #include "bme280.h"
 #include "math.h"
 #include "esp_log.h"
 
-bme280_handle_t bme280_create(i2c_bus_handle_t bus, uint8_t dev_addr)
+bme280_handle_t bme280_create(i2c_master_bus_handle_t bus, uint8_t dev_addr)
 {
     bme280_dev_t *sens = (bme280_dev_t *) calloc(1, sizeof(bme280_dev_t));
-    sens->i2c_dev = i2c_bus_device_create(bus, dev_addr, i2c_bus_get_current_clk_speed(bus));
-    if (sens->i2c_dev == NULL) {
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = dev_addr,
+        .scl_speed_hz = 100000,  // BME280 typical SCL speed
+    };
+
+    if (i2c_master_bus_add_device(bus, &dev_cfg, &sens->i2c_dev) != ESP_OK) {
         free(sens);
         return NULL;
     }
+
     sens->dev_addr = dev_addr;
     return (bme280_handle_t)sens;
 }
@@ -29,7 +36,7 @@ esp_err_t bme280_delete(bme280_handle_t *sensor)
         return ESP_OK;
     }
     bme280_dev_t *sens = (bme280_dev_t *)(*sensor);
-    i2c_bus_device_delete(&sens->i2c_dev);
+    i2c_master_bus_rm_device(sens->i2c_dev);
     free(sens);
     *sensor = NULL;
     return ESP_OK;
@@ -37,31 +44,29 @@ esp_err_t bme280_delete(bme280_handle_t *sensor)
 
 static esp_err_t bme280_read_uint16(bme280_handle_t sensor, uint8_t addr, uint16_t *data)
 {
-    esp_err_t ret = ESP_FAIL;
     bme280_dev_t *sens = (bme280_dev_t *) sensor;
-    uint8_t data0, data1;
-    if (i2c_bus_read_byte(sens->i2c_dev, addr, &data0) != ESP_OK) {
-        return ret;
+    uint8_t data_buf[2] = {0};
+
+    uint8_t write_buf = addr;
+    if (i2c_master_transmit_receive(sens->i2c_dev, &write_buf, 1, data_buf, 2, -1) != ESP_OK) {
+        return ESP_FAIL;
     }
-    if (i2c_bus_read_byte(sens->i2c_dev, addr + 1, &data1) != ESP_OK) {
-        return ret;
-    }
-    *data = (data0 << 8) | data1;
+
+    *data = (data_buf[0] << 8) | data_buf[1];
     return ESP_OK;
 }
 
 static esp_err_t bme280_read_uint16_le(bme280_handle_t sensor, uint8_t addr, uint16_t *data)
 {
-    esp_err_t ret = ESP_FAIL;
     bme280_dev_t *sens = (bme280_dev_t *) sensor;
-    uint8_t data0, data1;
-    if (i2c_bus_read_byte(sens->i2c_dev, addr, &data0) != ESP_OK) {
-        return ret;
+    uint8_t data_buf[2] = {0};
+
+    uint8_t write_buf = addr;
+    if (i2c_master_transmit_receive(sens->i2c_dev, &write_buf, 1, data_buf, 2, -1) != ESP_OK) {
+        return ESP_FAIL;
     }
-    if (i2c_bus_read_byte(sens->i2c_dev, addr + 1, &data1) != ESP_OK) {
-        return ret;
-    }
-    *data = (data1 << 8) | data0;
+
+    *data = (data_buf[1] << 8) | data_buf[0];
     return ESP_OK;
 }
 
@@ -86,8 +91,9 @@ unsigned int bme280_getctrl_hum(bme280_handle_t sensor)
 bool bme280_is_reading_calibration(bme280_handle_t sensor)
 {
     uint8_t rstatus = 0;
+    uint8_t reg_addr = BME280_REGISTER_STATUS;
     bme280_dev_t *sens = (bme280_dev_t *) sensor;
-    if (i2c_bus_read_byte(sens->i2c_dev, BME280_REGISTER_STATUS, &rstatus) != ESP_OK) {
+    if (i2c_master_transmit_receive(sens->i2c_dev, &reg_addr, 1, &rstatus, 1, -1) != ESP_OK) {
         return false;
     }
     return (rstatus & (1 << 0)) != 0;
@@ -98,6 +104,7 @@ esp_err_t bme280_read_coefficients(bme280_handle_t sensor)
     uint8_t data = 0;
     uint8_t data1 = 0;
     uint16_t data16 = 0;
+    uint8_t reg_addr = 0;
     bme280_dev_t *sens = (bme280_dev_t *) sensor;
     if (bme280_read_uint16_le(sensor, BME280_REGISTER_DIG_T1, &data16) != ESP_OK) {
         return ESP_FAIL;
@@ -147,7 +154,9 @@ esp_err_t bme280_read_coefficients(bme280_handle_t sensor)
         return ESP_FAIL;
     }
     sens->data_t.dig_p9 = (int16_t) data16;
-    if (i2c_bus_read_byte(sens->i2c_dev, BME280_REGISTER_DIG_H1, &data) != ESP_OK) {
+
+    reg_addr = BME280_REGISTER_DIG_H1;
+    if (i2c_master_transmit_receive(sens->i2c_dev, &reg_addr, 1, &data, 1, -1) != ESP_OK) {
         return ESP_FAIL;
     }
     sens->data_t.dig_h1 = data;
@@ -155,25 +164,35 @@ esp_err_t bme280_read_coefficients(bme280_handle_t sensor)
         return ESP_FAIL;
     }
     sens->data_t.dig_h2 = (int16_t) data16;
-    if (i2c_bus_read_byte(sens->i2c_dev, BME280_REGISTER_DIG_H3, &data) != ESP_OK) {
+
+    reg_addr = BME280_REGISTER_DIG_H3;
+    if (i2c_master_transmit_receive(sens->i2c_dev, &reg_addr, 1, &data, 1, -1) != ESP_OK) {
         return ESP_FAIL;
     }
     sens->data_t.dig_h3 = data;
-    if (i2c_bus_read_byte(sens->i2c_dev, BME280_REGISTER_DIG_H4, &data) != ESP_OK) {
+
+    reg_addr = BME280_REGISTER_DIG_H4;
+    if (i2c_master_transmit_receive(sens->i2c_dev, &reg_addr, 1, &data, 1, -1) != ESP_OK) {
         return ESP_FAIL;
     }
-    if (i2c_bus_read_byte(sens->i2c_dev, BME280_REGISTER_DIG_H4 + 1, &data1) != ESP_OK) {
+    reg_addr = BME280_REGISTER_DIG_H4 + 1;
+    if (i2c_master_transmit_receive(sens->i2c_dev, &reg_addr, 1, &data1, 1, -1) != ESP_OK) {
         return ESP_FAIL;
     }
     sens->data_t.dig_h4 = (data << 4) | (data1 & 0xF);
-    if (i2c_bus_read_byte(sens->i2c_dev, BME280_REGISTER_DIG_H5 + 1, &data) != ESP_OK) {
+
+    reg_addr = BME280_REGISTER_DIG_H5 + 1;
+    if (i2c_master_transmit_receive(sens->i2c_dev, &reg_addr, 1, &data, 1, -1) != ESP_OK) {
         return ESP_FAIL;
     }
-    if (i2c_bus_read_byte(sens->i2c_dev, BME280_REGISTER_DIG_H5, &data1) != ESP_OK) {
+    reg_addr = BME280_REGISTER_DIG_H5;
+    if (i2c_master_transmit_receive(sens->i2c_dev, &reg_addr, 1, &data1, 1, -1) != ESP_OK) {
         return ESP_FAIL;
     }
     sens->data_t.dig_h5 = (data << 4) | (data1 >> 4);
-    if (i2c_bus_read_byte(sens->i2c_dev, BME280_REGISTER_DIG_H6, &data) != ESP_OK) {
+
+    reg_addr = BME280_REGISTER_DIG_H6;
+    if (i2c_master_transmit_receive(sens->i2c_dev, &reg_addr, 1, &data, 1, -1) != ESP_OK) {
         return ESP_FAIL;
     }
     sens->data_t.dig_h6 = (int8_t) data;
@@ -183,6 +202,8 @@ esp_err_t bme280_read_coefficients(bme280_handle_t sensor)
 esp_err_t bme280_set_sampling(bme280_handle_t sensor, bme280_sensor_mode mode, bme280_sensor_sampling tempSampling, bme280_sensor_sampling pressSampling, bme280_sensor_sampling humSampling, bme280_sensor_filter filter, bme280_standby_duration duration)
 {
     bme280_dev_t *sens = (bme280_dev_t *) sensor;
+    uint8_t write_buf[2];
+
     sens->ctrl_meas_t.mode = mode;
     sens->ctrl_meas_t.osrs_t = tempSampling;
     sens->ctrl_meas_t.osrs_p = pressSampling;
@@ -191,13 +212,19 @@ esp_err_t bme280_set_sampling(bme280_handle_t sensor, bme280_sensor_mode mode, b
     sens->config_t.t_sb = duration;
     // you must make sure to also set REGISTER_CONTROL after setting the
     // CONTROLHUMID register, otherwise the values won't be applied (see DS 5.4.3)
-    if (i2c_bus_write_byte(sens->i2c_dev, BME280_REGISTER_CONTROLHUMID, bme280_getctrl_hum(sensor)) != ESP_OK) {
+    write_buf[0] = BME280_REGISTER_CONTROLHUMID;
+    write_buf[1] = bme280_getctrl_hum(sensor);
+    if (i2c_master_transmit(sens->i2c_dev, write_buf, 2, -1) != ESP_OK) {
         return ESP_FAIL;
     }
-    if (i2c_bus_write_byte(sens->i2c_dev, BME280_REGISTER_CONFIG, bme280_getconfig(sensor)) != ESP_OK) {
+    write_buf[0] = BME280_REGISTER_CONFIG;
+    write_buf[1] = bme280_getconfig(sensor);
+    if (i2c_master_transmit(sens->i2c_dev, write_buf, 2, -1) != ESP_OK) {
         return ESP_FAIL;
     }
-    if (i2c_bus_write_byte(sens->i2c_dev, BME280_REGISTER_CONTROL, bme280_getctrl_meas(sensor)) != ESP_OK) {
+    write_buf[0] = BME280_REGISTER_CONTROL;
+    write_buf[1] = bme280_getctrl_meas(sensor);
+    if (i2c_master_transmit(sens->i2c_dev, write_buf, 2, -1) != ESP_OK) {
         return ESP_FAIL;
     }
     return ESP_OK;
@@ -207,8 +234,11 @@ esp_err_t bme280_default_init(bme280_handle_t sensor)
 {
     // check if sensor, i.e. the chip ID is correct
     uint8_t chipid = 0;
+    uint8_t reg_addr = BME280_REGISTER_CHIPID;
+    uint8_t write_buf[2];
     bme280_dev_t *sens = (bme280_dev_t *) sensor;
-    if (i2c_bus_read_byte(sens->i2c_dev, BME280_REGISTER_CHIPID, &chipid) != ESP_OK) {
+
+    if (i2c_master_transmit_receive(sens->i2c_dev, &reg_addr, 1, &chipid, 1, -1) != ESP_OK) {
         ESP_LOGI("BME280:", "bme280_default_init->bme280_read_byte ->BME280_REGISTER_CHIPID failed!!!!:%x", chipid);
         return ESP_FAIL;
     }
@@ -217,7 +247,9 @@ esp_err_t bme280_default_init(bme280_handle_t sensor)
         return ESP_FAIL;
     }
     // reset the sens using soft-reset, this makes sure the IIR is off, etc.
-    if (i2c_bus_write_byte(sens->i2c_dev, BME280_REGISTER_SOFTRESET, 0xB6) != ESP_OK) {
+    write_buf[0] = BME280_REGISTER_SOFTRESET;
+    write_buf[1] = 0xB6;
+    if (i2c_master_transmit(sens->i2c_dev, write_buf, 2, -1) != ESP_OK) {
         return ESP_FAIL;
     }
     // wait for chip to wake up.
@@ -238,18 +270,22 @@ esp_err_t bme280_default_init(bme280_handle_t sensor)
 esp_err_t bme280_take_forced_measurement(bme280_handle_t sensor)
 {
     uint8_t data = 0;
+    uint8_t write_buf[2];
+    uint8_t reg_addr = BME280_REGISTER_STATUS;
     bme280_dev_t *sens = (bme280_dev_t *) sensor;
     if (sens->ctrl_meas_t.mode == BME280_MODE_FORCED) {
         // set to forced mode, i.e. "take next measurement"
-        if (i2c_bus_write_byte(sens->i2c_dev, BME280_REGISTER_CONTROL,      bme280_getctrl_meas(sensor)) != ESP_OK) {
+        write_buf[0] = BME280_REGISTER_CONTROL;
+        write_buf[1] = bme280_getctrl_meas(sensor);
+        if (i2c_master_transmit(sens->i2c_dev, write_buf, 2, -1) != ESP_OK) {
             return ESP_FAIL;
         }
         // wait until measurement has been completed, otherwise we would read, the values from the last measurement
-        if (i2c_bus_read_byte(sens->i2c_dev, BME280_REGISTER_STATUS, &data) != ESP_OK) {
+        if (i2c_master_transmit_receive(sens->i2c_dev, &reg_addr, 1, &data, 1, -1) != ESP_OK) {
             return ESP_FAIL;
         }
         while (data & 0x08) {
-            i2c_bus_read_byte(sens->i2c_dev, BME280_REGISTER_STATUS, &data);
+            i2c_master_transmit_receive(sens->i2c_dev, &reg_addr, 1, &data, 1, -1);
             vTaskDelay(10 / portTICK_RATE_MS);
         }
     }
@@ -260,8 +296,9 @@ esp_err_t bme280_read_temperature(bme280_handle_t sensor, float *temperature)
 {
     int32_t var1, var2;
     uint8_t data[3] = { 0 };
+    uint8_t reg_addr = BME280_REGISTER_TEMPDATA;
     bme280_dev_t *sens = (bme280_dev_t *) sensor;
-    if (i2c_bus_read_bytes(sens->i2c_dev, BME280_REGISTER_TEMPDATA, 3, data) != ESP_OK) {
+    if (i2c_master_transmit_receive(sens->i2c_dev, &reg_addr, 1, data, 3, -1) != ESP_OK) {
         return ESP_FAIL;
     }
     int32_t adc_T = (data[0] << 16) | (data[1] << 8) | data[2];
@@ -286,13 +323,14 @@ esp_err_t bme280_read_pressure(bme280_handle_t sensor, float *pressure)
 {
     int64_t var1, var2, p;
     uint8_t data[3] = { 0 };
+    uint8_t reg_addr = BME280_REGISTER_PRESSUREDATA;
     bme280_dev_t *sens = (bme280_dev_t *) sensor;
     float temp = 0.0;
     if (bme280_read_temperature(sensor, &temp) != ESP_OK) {
         // must be done first to get t_fine
         return ESP_FAIL;
     }
-    if (i2c_bus_read_bytes(sens->i2c_dev, BME280_REGISTER_PRESSUREDATA, 3, data) != ESP_OK) {
+    if (i2c_master_transmit_receive(sens->i2c_dev, &reg_addr, 1, data, 3, -1) != ESP_OK) {
         return ESP_FAIL;
     }
     int32_t adc_P = (data[0] << 16) | (data[1] << 8) | data[2];

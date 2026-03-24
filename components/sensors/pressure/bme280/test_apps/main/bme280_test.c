@@ -9,30 +9,29 @@
 #include "freertos/task.h"
 #include "unity.h"
 #include "esp_log.h"
+#include "driver/i2c_master.h"
+#include "driver/gpio.h"
 #include "bme280.h"
-#include "i2c_bus.h"
 
 #define I2C_MASTER_SCL_IO           GPIO_NUM_2           /*!< gpio number for I2C master clock IO2*/
 #define I2C_MASTER_SDA_IO           GPIO_NUM_1           /*!< gpio number for I2C master data  IO1*/
 #define I2C_MASTER_NUM              I2C_NUM_0            /*!< I2C port number for master bme280 */
-#define I2C_MASTER_TX_BUF_DISABLE   0                    /*!< I2C master do not need buffer */
-#define I2C_MASTER_RX_BUF_DISABLE   0                    /*!< I2C master do not need buffer */
 #define I2C_MASTER_FREQ_HZ          100000               /*!< I2C master clock frequency */
 
-static i2c_bus_handle_t i2c_bus = NULL;
+static i2c_master_bus_handle_t i2c_bus = NULL;
 static bme280_handle_t bme280 = NULL;
 
 void bme280_test_init()
 {
-    i2c_config_t conf = {
-        .mode = I2C_MODE_MASTER,
+    i2c_master_bus_config_t i2c_bus_cfg = {
+        .i2c_port = I2C_MASTER_NUM,
         .sda_io_num = I2C_MASTER_SDA_IO,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
         .scl_io_num = I2C_MASTER_SCL_IO,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_MASTER_FREQ_HZ,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
     };
-    i2c_bus = i2c_bus_create(I2C_MASTER_NUM, &conf);
+    i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus);
     bme280 = bme280_create(i2c_bus, BME280_I2C_ADDRESS_DEFAULT);
     ESP_LOGI("BME280:", "bme280_default_init:%d", bme280_default_init(bme280));
 }
@@ -40,7 +39,7 @@ void bme280_test_init()
 void bme280_test_deinit()
 {
     bme280_delete(&bme280);
-    i2c_bus_delete(&i2c_bus);
+    i2c_del_master_bus(i2c_bus);
 }
 
 void bme280_test_getdata()
